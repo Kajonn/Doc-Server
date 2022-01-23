@@ -150,7 +150,7 @@
 
         public UploadStatus? GetStatus(UInt64 uploadId)
         {
-            _logger.LogInformation("GetStatus for id " + uploadId);
+            _logger.LogDebug("GetStatus for id " + uploadId);
 
             _readWriteLock.EnterReadLock();
             try
@@ -158,7 +158,7 @@
                 Upload upload;
                 if(_uploads.TryGetValue(uploadId, out upload))
                 {
-                    _logger.LogInformation("Return status " + upload.status);
+                    _logger.LogDebug("Return status " + upload.status);
                     return upload.status;
                 }
                 else

@@ -63,7 +63,16 @@ app.MapGet("/upload/{idstr}", (String idstr) =>
 {
     try
     {
-        var astatus = uploadManager.GetStatus(UInt64.Parse(idstr));
+        var id = UInt64.Parse(idstr);
+        var astatus = uploadManager.GetStatus(id);
+        if(astatus.HasValue)
+        {
+            if( astatus.Value.Status == UploadStatus.StatusType.Completed ||
+                astatus.Value.Status == UploadStatus.StatusType.Error ) 
+            { //Remove completed when their statuses have been retrived
+                uploadManager.RemoveStatus(id);
+            }
+        }
         return astatus;
 
     } catch(Exception e)
