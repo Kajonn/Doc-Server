@@ -4,12 +4,12 @@
     {
         public enum StatusType
         {
-            Error,
+            NotStarted,
             Pending,
-            OnGoing,
             Completed
         }
 
+        public UploadResult Result { get; set; }
         public StatusType Status { get; set; }
         public String StatusString { get; set; }
     }

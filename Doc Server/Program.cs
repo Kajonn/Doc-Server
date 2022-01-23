@@ -67,8 +67,7 @@ app.MapGet("/upload/{idstr}", (String idstr) =>
         var astatus = uploadManager.GetStatus(id);
         if(astatus.HasValue)
         {
-            if( astatus.Value.Status == UploadStatus.StatusType.Completed ||
-                astatus.Value.Status == UploadStatus.StatusType.Error ) 
+            if( astatus.Value.Status == UploadStatus.StatusType.Completed ) 
             { //Remove completed when their statuses have been retrived
                 uploadManager.RemoveStatus(id);
             }

@@ -1,16 +1,6 @@
 ﻿namespace Doc_Server
 {
 
-    internal struct UploadResult
-    {
-        public enum ResultType {
-            Failed,
-            Completed
-        }
-        public ResultType Result { get; set; }
-        public String Message { get; set; }
-    }
-
     internal delegate UploadResult UploadDelegate(UploadRequest request);
 
     internal class UploadManager
@@ -46,12 +36,12 @@
         {            
             _readWriteLock.EnterWriteLock();
             try {
-                _logger.LogDebug("Try to begin next task ");
+                _logger.LogDebug("Try to begin next task, num pendingUploads: " + _pendingUploads.Count);
 
                 while (_pendingUploads.Count > 0 && _ongoingTasks.Count < _maxTasks)
                 {
                     UInt64 id = _pendingUploads.Dequeue();
-                    _logger.LogInformation("Creating Task for request " + id);
+                    _logger.LogInformation("Dequee request " + id + " remaining pendingUploads: " + _pendingUploads.Count);                    
 
                     Upload upload;
                     if (_uploads.TryGetValue(id, out upload))
@@ -77,10 +67,9 @@
                                             {
                                                 //Update status with result
                                                 var upload = _uploads[id];
-                                                upload.status.Status =
-                                                    result.Result == UploadResult.ResultType.Completed ?
-                                                    UploadStatus.StatusType.Completed : UploadStatus.StatusType.Error;
-                                                upload.status.StatusString = result.Message;
+                                                upload.status.Status = UploadStatus.StatusType.Completed;
+                                                upload.status.Result = result;
+                                                upload.status.StatusString = "Upload task" + id + " completed.";
                                                 _uploads[id] = upload;
 
                                                 _ongoingTasks.Remove(id);
@@ -100,8 +89,11 @@
                         uploadTask.Start();
                         _ongoingTasks.Add(id, uploadTask);
 
-                        _logger.LogInformation("Task created, total tasks running " + _ongoingTasks.Count);
+                        upload.status.Status = UploadStatus.StatusType.Pending;
+                        upload.status.StatusString = "Upload task" + id + " started.";
+                        _uploads[id] = upload;
 
+                        _logger.LogInformation("Task created, total tasks running " + _ongoingTasks.Count);
                     }
                     else
                     {
@@ -121,19 +113,21 @@
             //TODO check if upload allready has been added
             var upload = new Upload();
             upload.status = new UploadStatus();
-            upload.status.Status = UploadStatus.StatusType.Pending;
+            upload.status.Status = UploadStatus.StatusType.NotStarted;
             upload.status.StatusString = "Upload " + request.Path + " for user " + request.User + " pending";
             upload.request = request;
 
             var id = Interlocked.Increment(ref _nextuploadId);
-            _logger.LogInformation("Mapping " + request.ToString() + " to id " + id);
+            _logger.LogInformation("Mapping uploadRequest " + request.Path + " to id " + id);
 
             _readWriteLock.EnterWriteLock();
             try
             {
                 _uploads.Add(id, upload);
                 _pendingUploads.Enqueue(id);
-            } finally
+                _logger.LogInformation("Enque upload, Num pendingUploads: " + _pendingUploads.Count);
+            }
+            finally
             {
                 _readWriteLock.ExitWriteLock();
             }//Relase lock before entering beginNextTask to prevent deadlock
