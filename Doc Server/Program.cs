@@ -1,45 +1,75 @@
-var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+using Doc_Server;
+
+var builder = WebApplication.CreateBuilder(args);
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
-
 app.UseHttpsRedirection();
 
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
+Random random = new Random();
 
-//app.MapPost("/upload" () => { } )
+UploadManager uploadManager = new UploadManager(
+    (UploadRequest request) => {
+        const double chanceOfFailure = 0.05;
+        const double maxUploadTimeS = 10.0;
 
-app.MapGet("/upload", () =>
+        TimeSpan sleepTime;
+        bool success;
+
+        lock (random)
+        {
+            success = random.NextDouble() > chanceOfFailure;
+            sleepTime = TimeSpan.FromSeconds(random.NextDouble() * maxUploadTimeS);
+        }
+
+        Thread.Sleep(sleepTime);
+
+        UploadResult uploadResult = new UploadResult();
+        if (success)
+        {
+            uploadResult.Result = UploadResult.ResultType.Completed;
+            uploadResult.Message = "Successfully uploaded " + request.Path + " for user " + request.User;
+        }
+        else {
+            uploadResult.Result = UploadResult.ResultType.Failed;
+            uploadResult.Message = "Error when uploading " + request.Path + " for user " + request.User;
+        }
+        return uploadResult;
+    },
+    4,
+    app.Services.GetRequiredService<ILogger<UploadManager>>());
+
+//for (int i = 0; i < 10; i++) {
+//    UploadRequest request = new();
+//    request.Path = "file_" + i;
+//    request.User = "user_" + i;
+//    uploadManager.UploadFile(request);
+//}
+
+
+app.MapPost("/upload", (UploadRequest reguest) => {
+    try
+    {
+        return uploadManager.UploadFile(reguest);
+    }
+    catch (Exception ex)
+    {
+        return new UploadIdentifier();
+    }
+} );
+
+app.MapGet("/upload/{idstr}", (String idstr) =>
 {
-    var forecast = Enumerable.Range(1, 5).Select(index =>
-       new WeatherForecast
-       (
-           DateTime.Now.AddDays(index),
-           Random.Shared.Next(-20, 55),
-           summaries[Random.Shared.Next(summaries.Length)]
-       ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
+    try
+    {
+        var astatus = uploadManager.GetStatus(UInt64.Parse(idstr));
+        return astatus;
+
+    } catch(Exception e)
+    {
+        return null;
+    }
+});
 
 app.Run();
-
-internal record WeatherForecast(DateTime Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}

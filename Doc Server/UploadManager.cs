@@ -1,36 +1,19 @@
 ﻿namespace Doc_Server
 {
-    public struct UploadRequest
-    {
-        public string Path { get; set; }
-        public string User { get; set; }
-    }
-    public struct UploadStatus
-    {
-        public enum Status {
-            Error,
-            Pending,
-            OnGoing,
-            Completed
-        }
 
-        public Status status;
-        public String statusString;
-    }
-
-    public struct UploadResult
+    internal struct UploadResult
     {
-        public enum Status{
+        public enum ResultType {
             Failed,
             Completed
         }
-        public Status status;
-        public String statusString;
+        public ResultType Result { get; set; }
+        public String Message { get; set; }
     }
 
-    public delegate UploadResult UploadDelegate(UploadRequest request);
+    internal delegate UploadResult UploadDelegate(UploadRequest request);
 
-    public class UploadManager
+    internal class UploadManager
     {
         public struct Upload
         {
@@ -38,145 +21,176 @@
             public UploadRequest request;
         }
         
-        private ReaderWriterLockSlim readWriteLock = new ReaderWriterLockSlim();
+        private readonly ReaderWriterLockSlim _readWriteLock = new();
 
-        private Dictionary<UInt64, Upload> uploads = new Dictionary<ulong, Upload>();
+        private readonly Dictionary<UInt64, Upload> _uploads = new();
 
-        private Queue<UInt64> pendingUploads = new Queue<UInt64>();
-        private Dictionary<UInt64, Task> ongoingTasks = new Dictionary<UInt64, Task>();
+        private readonly Queue<UInt64> _pendingUploads = new();
+        private readonly Dictionary<UInt64, Task> _ongoingTasks = new();
 
-        private UInt64 nextuploadId = 0;
+        private UInt64 _nextuploadId = 0;
 
-        private UploadDelegate uploadFunction;
-        private int maxTasks;
+        private readonly UploadDelegate _uploadFunction;
+        private readonly int _maxTasks;
+        private readonly ILogger<UploadManager> _logger;
 
-        public UploadManager(UploadDelegate uploadDelegate, int maxTasks_)
+        public UploadManager(UploadDelegate uploadDelegate, int maxTasks, ILogger<UploadManager> logger_)
         {
-            this.uploadFunction = uploadDelegate;
-            this.maxTasks = maxTasks_;
+            this._uploadFunction = uploadDelegate;
+            this._maxTasks = maxTasks;
+            _logger = logger_;
+            _logger.LogInformation("Creating uploadManager with " + maxTasks + " threads");
         }
 
-        private void beginNextTask()
-        {
-            readWriteLock.EnterWriteLock();
-            try { 
-                if (pendingUploads.Count() > 0 && ongoingTasks.Count()<maxTasks)
+        private void TryBeginNextTask()
+        {            
+            _readWriteLock.EnterWriteLock();
+            try {
+                _logger.LogDebug("Try to begin next task ");
+
+                while (_pendingUploads.Count > 0 && _ongoingTasks.Count < _maxTasks)
                 {
-                    UInt64 id = pendingUploads.Dequeue();
+                    UInt64 id = _pendingUploads.Dequeue();
+                    _logger.LogInformation("Creating Task for request " + id);
+
                     Upload upload;
-                    if (uploads.TryGetValue(id, out upload))
+                    if (_uploads.TryGetValue(id, out upload))
                     {
+                        //TODO use progress and cancelation tokens to controll and monitor the task
                         var uploadTask = new Task(
                                         () =>
                                         {
                                             UploadResult result;
                                             try
                                             {
-                                                result = uploadFunction.Invoke(upload.request);
+                                                result = _uploadFunction.Invoke(upload.request);
                                             }
                                             catch (Exception ex)
                                             {
-                                                result = new UploadResult();
-                                                result.status = UploadResult.Status.Failed;
-                                                result.statusString = ex.Message;
+                                                result = new();
+                                                result.Result = UploadResult.ResultType.Failed;
+                                                result.Message = "Exception during upload: " + ex.Message;
                                             }
 
-                                            readWriteLock.EnterWriteLock();
+                                            _readWriteLock.EnterWriteLock();
                                             try
                                             {
-                                                var upload = uploads[id];
-                                                upload.status.status =
-                                                    result.status == UploadResult.Status.Completed ?
-                                                    UploadStatus.Status.Completed : UploadStatus.Status.Error;
-                                                upload.status.statusString = result.statusString;
-                                                uploads.Add(id, upload);
+                                                //Update status with result
+                                                var upload = _uploads[id];
+                                                upload.status.Status =
+                                                    result.Result == UploadResult.ResultType.Completed ?
+                                                    UploadStatus.StatusType.Completed : UploadStatus.StatusType.Error;
+                                                upload.status.StatusString = result.Message;
+                                                _uploads[id] = upload;
+
+                                                _ongoingTasks.Remove(id);
+
+                                                _logger.LogInformation("Task removed, total tasks running " + _ongoingTasks.Count);
                                             }
                                             finally
                                             {
-                                                readWriteLock.ExitWriteLock();
-                                            }
+                                                _readWriteLock.ExitWriteLock();
+                                            } //Relase lock before entering beginNextTask to prevent deadlock
 
-                                            lock (ongoingTasks)
-                                            {
-                                                ongoingTasks.Remove(id);
-                                            }
+                                            TryBeginNextTask();
 
-                                            beginNextTask();
+                                            _logger.LogInformation("Upload task for " + id + " finished, result: " + result.Result + " : " + result.Message );
                                         });
+
                         uploadTask.Start();
-                        ongoingTasks.Add(id, uploadTask);
-                    } else
+                        _ongoingTasks.Add(id, uploadTask);
+
+                        _logger.LogInformation("Task created, total tasks running " + _ongoingTasks.Count);
+
+                    }
+                    else
                     {
-                        //TODO missing upload status
+                        _logger.LogError("Upload request missing when adding queded task");
                     }
                 }
             } finally
             {
-                readWriteLock.ExitWriteLock();
+                _readWriteLock.ExitWriteLock();
             }
         }
 
-        public UInt64 uploadFile(UploadRequest request)
+        public UploadIdentifier UploadFile(UploadRequest request)
         {
+            _logger.LogInformation("UploadRequest for path: " + request.Path + " user: " + request.User + " recived");
+
+            //TODO check if upload allready has been added
             var upload = new Upload();
             upload.status = new UploadStatus();
-            upload.status.status = UploadStatus.Status.Pending;
-            upload.status.statusString = "Upload " + request.Path + " for user " + request.User + " pending";
+            upload.status.Status = UploadStatus.StatusType.Pending;
+            upload.status.StatusString = "Upload " + request.Path + " for user " + request.User + " pending";
             upload.request = request;
 
-            var id = Interlocked.Increment(ref nextuploadId);
+            var id = Interlocked.Increment(ref _nextuploadId);
+            _logger.LogInformation("Mapping " + request.ToString() + " to id " + id);
 
-            readWriteLock.EnterWriteLock();
+            _readWriteLock.EnterWriteLock();
             try
             {
-                uploads.Add(id, upload);
+                _uploads.Add(id, upload);
+                _pendingUploads.Enqueue(id);
             } finally
             {
-                readWriteLock.ExitWriteLock();
-            }
+                _readWriteLock.ExitWriteLock();
+            }//Relase lock before entering beginNextTask to prevent deadlock
 
-            beginNextTask();
 
-            return id;
+            TryBeginNextTask();
+
+            UploadIdentifier identifier = new();
+            identifier.Identifier = ""+id;
+
+            return identifier;
         }
 
 
-        public UploadStatus? getStatus(UInt64 uploadId)
+        public UploadStatus? GetStatus(UInt64 uploadId)
         {
-            readWriteLock.EnterReadLock();
+            _logger.LogInformation("GetStatus for id " + uploadId);
+
+            _readWriteLock.EnterReadLock();
             try
             {
                 Upload upload;
-                if(uploads.TryGetValue(uploadId, out upload))
+                if(_uploads.TryGetValue(uploadId, out upload))
                 {
+                    _logger.LogInformation("Return status " + upload.status);
                     return upload.status;
                 }
                 else
                 {
+                    _logger.LogInformation("Id not found, return null");
                     return null;
                 }
             }
             finally
             {
-                readWriteLock.ExitReadLock();
+                _readWriteLock.ExitReadLock();
             }
         }
 
-        public void removeStatus(UInt64 uploadId)
+        public void RemoveStatus(UInt64 uploadId)
         {
-            readWriteLock.EnterWriteLock();
+            _logger.LogInformation("RemoveStatus for id " + uploadId);
+
+            _readWriteLock.EnterWriteLock();
             try {
-                if (ongoingTasks.ContainsKey(uploadId))
+                
+                if (_ongoingTasks.ContainsKey(uploadId))
                 {
-                    //TODO warn that finish status will be removed
+                    _logger.LogWarning("Task is ongoing for id " + uploadId);
                 }
 
-                uploads.Remove(uploadId);
+                _uploads.Remove(uploadId);
             
             }   
             finally
             {
-                readWriteLock.ExitWriteLock();
+                _readWriteLock.ExitWriteLock();
             }
         }
 
